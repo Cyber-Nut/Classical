@@ -19,6 +19,10 @@ class _ClassicalScreenState extends State<Classicalscreen> {
   bool isCurrentDevicePaired = false;
   bool isCurrentDeviceConnected = false;
 
+  BluetoothConnection? _currentConnection;
+  Timer? _reconnectTimer;
+  bool _isConnecting = false;
+
   @override
   void initState() {
     super.initState();
@@ -194,57 +198,176 @@ class _ClassicalScreenState extends State<Classicalscreen> {
     }
   }
 
-  // Future<void> connectToDevice(String macAddress) async {
-  //   setState(() {
-  //     status = 'Trying to connect.';
-  //   });
-  //   print('Trying to connect...');
-  //   BluetoothConnection? connection =
-  //       await _flutterBlueClassicPlugin.connect(macAddress);
-  //   if (connection != null && connection.isConnected) {
-  //     setState(() {
-  //       status = 'Device connected Succesfully';
-  //     });
-  //   } else {
-  //     setState(() {
-  //       status = 'error connecting to device';
-  //     });
-  //   }
-  // }
-  Future<void> connectToDevice(String macAddress) async {
-    bool isBluetoothEnabled = await _flutterBlueClassicPlugin.isEnabled;
-    if (!isBluetoothEnabled) {
-      _flutterBlueClassicPlugin.turnOn(); // Prompt user to enable Bluetooth
+  Future<void> resetConnectionState() async {
+    try {
+      // Cancel any ongoing connection attempt
+      if (_currentConnection != null) {
+        print('Closing existing connection...');
+        await _currentConnection!.finish(); // Graceful termination
+        await _currentConnection!.close(); // Hard close
+        _currentConnection!.dispose(); // Release resources
+        _currentConnection = null;
+      }
+
+      // Stop any active scans
+      print('Stopping active scan...');
+      _flutterBlueClassicPlugin.stopScan();
+
+      // Reset connection flags
+      setState(() {
+        _isConnecting = false;
+        isCurrentDeviceConnected = false;
+        status = 'Connection state reset';
+      });
+
+      await Future.delayed(Duration(seconds: 2));
+
+      print('Connection state has been reset.');
+    } catch (e) {
+      print('Error during connection state reset: $e');
     }
+  }
+
+  Future<void> connectToDevice(String macAddress) async {
+    if (_isConnecting) {
+      print('Already attempting to connect...');
+      return;
+    }
+
+    await resetConnectionState();
+
     setState(() {
-      status = 'Trying to connect...';
+      _isConnecting = true;
+      status = 'Initiating connection...';
     });
-    print('Trying to connect...');
-    _flutterBlueClassicPlugin.stopScan();
 
     try {
-      BluetoothConnection? connection = await _flutterBlueClassicPlugin
+      // First disconnect any existing connection
+      if (_currentConnection != null) {
+        await _currentConnection!.close();
+        _currentConnection = null;
+        await Future.delayed(Duration(seconds: 2));
+      }
+
+      // Ensure Bluetooth is enabled
+      bool isBluetoothEnabled = await _flutterBlueClassicPlugin.isEnabled;
+      if (!isBluetoothEnabled) {
+        _flutterBlueClassicPlugin.turnOn();
+        await Future.delayed(Duration(seconds: 2));
+      }
+
+      // Stop any ongoing scan
+      _flutterBlueClassicPlugin.stopScan();
+      await Future.delayed(Duration(seconds: 1));
+
+      setState(() {
+        status = 'Attempting to connect...';
+      });
+
+      await Future.delayed(Duration(seconds: 2));
+      // Connect with longer timeout
+      _currentConnection = await _flutterBlueClassicPlugin
           .connect(macAddress)
           .timeout(Duration(seconds: 10));
 
-      await Future.delayed(Duration(seconds: 5));
-
-      if (connection != null && connection.isConnected) {
+      // Verify connection
+      if (_currentConnection != null && _currentConnection!.isConnected) {
         setState(() {
-          status = 'Device connected successfully';
+          status = 'Connected successfully';
+          isCurrentDeviceConnected = true;
         });
       } else {
-        setState(() {
-          status = 'Error connecting to device';
-        });
+        throw Exception('Connection verification failed');
       }
     } catch (e) {
+      print('Connection error: $e');
       setState(() {
-        status = 'Connection attempt timed out';
+        status = 'Connection failed: ${e.toString()}';
+        isCurrentDeviceConnected = false;
       });
-      print('Error connecting: $e');
+      if (_currentConnection != null) {
+        await _currentConnection!.close();
+        _currentConnection = null;
+      }
+    } finally {
+      setState(() {
+        _isConnecting = false;
+      });
     }
   }
+
+  Future<void> disconnectFromDevice() async {
+    _reconnectTimer?.cancel();
+
+    if (_currentConnection != null) {
+      try {
+        await _currentConnection!.finish(); // Try to gracefully finish first
+        await Future.delayed(Duration(milliseconds: 500));
+        await _currentConnection!.close();
+        await Future.delayed(Duration(milliseconds: 500));
+        _currentConnection!.dispose();
+      } catch (e) {
+        print('Error during disconnect: $e');
+      }
+      _currentConnection = null;
+    }
+
+    setState(() {
+      isCurrentDeviceConnected = false;
+      status = 'Disconnected';
+    });
+  }
+
+  void handleDisconnection() {
+    setState(() {
+      isCurrentDeviceConnected = false;
+      status = 'Device disconnected';
+    });
+
+    disconnectFromDevice();
+  }
+
+  // Add this to your dispose method
+  @override
+  void dispose() {
+    disconnectFromDevice();
+    _reconnectTimer?.cancel();
+    super.dispose();
+  }
+  // Future<void> connectToDevice(String macAddress) async {
+  //   bool isBluetoothEnabled = await _flutterBlueClassicPlugin.isEnabled;
+  //   if (!isBluetoothEnabled) {
+  //     _flutterBlueClassicPlugin.turnOn(); // Prompt user to enable Bluetooth
+  //   }
+  //   setState(() {
+  //     status = 'Trying to connect...';
+  //   });
+  //   print('Trying to connect...');
+  //   _flutterBlueClassicPlugin.stopScan();
+
+  //   try {
+  //     BluetoothConnection? connection = await _flutterBlueClassicPlugin
+  //         .connect(macAddress)
+  //         .timeout(Duration(seconds: 10));
+
+  //     await Future.delayed(Duration(seconds: 5));
+
+  //     if (connection != null && connection.isConnected) {
+  //       setState(() {
+  //         status = 'Device connected successfully';
+  //       });
+  //     } else {
+  //       setState(() {
+  //         status = 'Error connecting to device';
+  //       });
+  //     }
+  //   } catch (e) {
+  //     setState(() {
+  //       status = 'Connection attempt timed out';
+  //     });
+  //     print('Error connecting: $e');
+  //   }
+  // }
 
   // Future<void> connectToDeviceWithRetry(String macAddress,
   //     {int retries = 3}) async {
